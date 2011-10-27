@@ -47,5 +47,5 @@ def hashsplit(file, smallest=0, biggest=None):
 		yield chunk
 
 import sys
-for chunk in hashsplit(sys.argv[1], biggest=0):
+for chunk in hashsplit(sys.argv[1], biggest=20480):
 	print '%i\t%i\t%08x' % (chunk.offset, chunk.length, chunk.digest)

@@ -2,27 +2,30 @@
 
 CHAR_OFFSET=31
 WINDOWSIZE=128
+DATASIZE=20480
 
 class Chunk(object):
 	def __init__(self, offset):
 		self.offset = offset
-		self.length = 0
 		self.s1 = WINDOWSIZE * CHAR_OFFSET
 		self.s2 = WINDOWSIZE * (WINDOWSIZE-1) * CHAR_OFFSET
-		self.digest = (self.s1 << 16 | self.s2)
-		self.window = [0] * WINDOWSIZE
-		self.window_offset = 0
+		self.data = ''
 
-	def append(self, add):
-		drop = self.window[self.window_offset]
-		self.window[self.window_offset] = add
-		self.window_offset = (self.window_offset+1) % WINDOWSIZE
+	@property
+	def length(self): return len(self.data)
+
+	@property
+	def digest(self): return self.s1 << 16 | self.s2
+
+	def append(self, add, biggest):
+		cursor = self.length - WINDOWSIZE
+		drop = ord(self.data[cursor]) if cursor >= 0 else 0
+		self.data += chr(add)
 		self.s1 += add - drop
 		self.s1 &= 0xffff
 		self.s2 += self.s1 - WINDOWSIZE * (drop + CHAR_OFFSET)
 		self.s2 &= 0xffff
-		self.digest = (self.s1 << 16 | self.s2)
-		self.length += 1
+		return not biggest or self.length < biggest
 
 def read_chunk(file, smallest=0, biggest=None):
 	chunk = Chunk(file.tell())
@@ -33,8 +36,7 @@ def read_chunk(file, smallest=0, biggest=None):
 		if not char:
 			last = True
 			break
-		chunk.append(ord(char))
-		if biggest and chunk.length >= biggest:
+		if not chunk.append(ord(char), biggest):
 			break
 	return chunk, last
 
@@ -47,5 +49,5 @@ def hashsplit(file, smallest=0, biggest=None):
 		yield chunk
 
 import sys
-for chunk in hashsplit(sys.argv[1], biggest=20480):
-	print '%i\t%i\t%08x' % (chunk.offset, chunk.length, chunk.digest)
+for chunk in hashsplit(sys.argv[1], biggest=DATASIZE):
+	print '%i:%s' % (chunk.length, chunk.data)

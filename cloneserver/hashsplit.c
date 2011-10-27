@@ -62,8 +62,9 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 	while (read_chunk(source_file, &chunk)) {
-		printf("%lu\t%u\t%08x\n", chunk.offset,
-			   chunk.length, chunk_digest(&chunk));
+		printf("%u:", chunk.length);
+		fwrite(chunk.data, chunk.length, 1, stdout);
+		printf("\n");
 	}
 	return 0;
 }

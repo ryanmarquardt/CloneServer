@@ -7,13 +7,15 @@ import socket
 import hashlib
 import hmac
 import random
+import os
 import threading
 import Queue
 import time
 import select
 
 import inotify
-import dal
+from dal import DB, Table, Field
+from bus import Bus
 
 PORT = 5979
 ALL = ''
@@ -105,54 +107,64 @@ class BGServer(threading.Thread, Socket):
 
 	def run(self):
 		while self.running:
-			for sock in select.select(self.sockets, [], [], 1)[0]:
+			for sock in select.select([self], [], [], 1)[0]:
 				self.on_message(*sock.recvfrom(65535)) #Max 1 udp packet
 
 	def stop(self):
 		self.running = False
 
+##For client with peerid deadbeef0001:
+## Notify peers about an updated file
+#deadbeef0001 Updated 25:Music/Beatles/Imagine.mp3\n
+## Request information about the file
+#deadbeef0001 Request 25:Music/Beatles/Imagine.mp3\n
+## Request information about all files
+#deadbeef0001 Request 0:\n
+
 class Broadcaster(BGServer):
-	_inst_count = 0
 	def __init__(self, bus, peerid, address, name=None):
 		self.bus = bus
 		self.peerid = peerid
-		self._inst_count += 1
-		name = name or 'Broadcaster-%i' % self._inst_count
-		BGServer.__init__(self, address, name=name)
+		BGServer.__init__(self, address, name=name or 'Broadcaster')
 
 	def send(self, *message):
 		message = ('%012x' % self.peerid,) + message
+		print 'Sending:', ' '.join(message)
 		self.announcer.sendto(' '.join(message), ('<broadcast>', self.port))
 
 	def on_message(self, data, address):
 		try:
+			assert data[12] == ' ' and data[20] == ' ' and data[-1] == '\n'
 			peerid = int(data[:12], 16)
-			assert data[13] == ' '
-			self.bus.submit(MessageType.HeardFromPeer, address=(host, port), peerid=peerid)
-			if data[14:] == 'Hello?\n':
-				type = MessageType.PeerRequest
-			elif data[14:] == 'Update\n':
-				type = MessageType.Update
+			verb = data[13:20]
+			arg = data[21:]
+			s = arg.find(':',1,4)
+			assert s != -1
+			l = int(arg[:s])
+			path = arg[s+1:l+s+1]
+			self.bus.submit(MessageType.HeardFromPeer, address=address, peerid=peerid)
+			if verb == 'Request':
+				self.bus.submit(MessageType.Request, address=address, peerid=peerid, path=path)
+			elif verb == 'Updated':
+				self.bus.submit(MessageType.RemoteUpdate, address=address, peerid=peerid, path=path)
 			else:
 				raise Exception
 		except:
-			self.bus.submit(MessageType.BadData, address=(host, port))
+			self.bus.submit(MessageType.BadData, address=address)
 
 class Whisperer(BGServer):
-	_inst_count = 0
-	def __init__(self, bus, *addresses, **kwargs):
-		self._inst_count += 1
-		kwargs.setdefault('name', 'Whisperer-%i' % self._inst_count)
-		BGServer.__init__(self, *addresses, **kwargs)
-
-	def on_connect
+	def __init__(self, bus, address, name=None):
+		BGServer.__init__(self, address, name=name or 'Whisperer')
 
 class Message(attrdict): pass
 
 MessageType = attrdict(
 	ANY = None,
-	NewPeer = 'new-peer',
-	ResourceChanged = 'resource-changed',
+	HeardFromPeer = 'heard-from-peer',
+	Updated = 'updated',
+	Request = 'request',
+	BadData = 'bad-data',
+	Start = 'start',
 )
 
 def iterqueue(queue, timeout=0):
@@ -162,57 +174,37 @@ def iterqueue(queue, timeout=0):
 		except Queue.Empty:
 			break
 
-class Bus(Thread):
-	def __init__(self):
-		threading.Thread.__init__(self, name='Message Bus')
-		self.messages = Queue.Queue()
-		self.connect_lock = threading.Lock()
-		self.callbacks = {}
-		self._highest_i = 0
-
-	def run(self):
-		try:
-			for m in iterqueue(self.messages, timeout=1):
-				if m is None:
-					return
-				with self.connect_lock:
-					for i, (type, func, args, kwargs) in self.callbacks.items():
-						if type in (None, m.type):
-							try:
-								func(m, *args, **kwargs)
-							except BaseException:
-								del self.callbacks[i]
-		finally:
-			self.stop()
-
-	def submit(self, message_type, **kwargs):
-		self.messages.put(Message(type=message_type, **kwargs))
-
-	def stop(self):
-		self.messages.put(None)
-
-	def connect(self, message_type, callback, *args, **kwargs):
-		with self.connect_lock:
-			self.callbacks[self._highest_i] = (message_type, callback, args, kwargs)
-			self._highest_i += 1
-
 class Peer(object):
-	def __init__(self, host=None, port=None):
+	def __init__(self, share_path, host=None, port=None):
 		self.host, self.port = (host or ALL), (port or PORT)
 		self.db = dal.DB('sqlite://')
-		self.config = self.db.define_table('config',
-			dal.Field('key', key=True), dal.Field('value'))
-		if 'peerid' not in self.config:
-			self.config['peerid'] = hex(random.getrandbits(48))[2:14]
-		self.peers = self.db.define_table('peers',
+		self.db.define_table('config',
+			dal.Field('key', key=True), dal.Field('value')
+			)
+		if 'peerid' not in self.db.config:
+			self.db.config['peerid'] = hex(random.getrandbits(48))[2:14]
+		self.db.define_table('peers',
 			dal.Field('peerid'),
 			dal.Field('address', serialize=lambda x:'%s:%i'%x,
-			 convert=lambda x:tuple(f(a) for f,a in zip((str,int),x.rsplit(':',1))))
+			 convert=lambda x:tuple(f(a) for f,a in zip((str,int),x.rsplit(':',1)))),
 			dal.Field('ignore', default=False),
 			)
+		self.db.define_table('resources',
+			dal.Field('path', key=True),
+			dal.Field('age', int),
+			dal.Field('real_path'),
+			)
+		if os.path.isdir(share_path) and share_path[-1] != '/':
+			share_path += '/'
+		for path in find(os.path.abspath(share_path)):
+			short_path = path[len(share_path):]
+			print path, short_path
+			self.db.resources.insert(path=short_path, age=mod_time(os.stat(path)), real_path=path)
 		self.bus = Bus()
-		self.bus.connect(MessageType.NewPeer, self.introduce)
-		self.public = Broadcaster(self.bus, self.config['peerid'], (self.host, self.port))
+		self.bus.connect(MessageType.HeardFromPeer, self.introduce)
+		self.bus.connect(MessageType.Request, self.notify)
+		self.bus.connect(MessageType.RemoteUpdate, self.remote_update)
+		self.public = Broadcaster(self.bus, self.db.config['peerid'], (self.host, self.port))
 		self.private = Whisperer(self.bus, (self.host, self.port))
 
 	def start(self):
@@ -223,21 +215,25 @@ class Peer(object):
 	def announce(self):
 		self.broadcaster.send('Hello?')
 
+	def remote_update(self, message):
+		if self.filter(message.path):
+			self.private.retrieve(message.address, message.path)
+
 	def introduce(self, message):
 		print message
 		self.db.peers.insert(**message)
 
-	def receive(self, message, peer, port):
-		if message == 'Hello?':
-			self.peers[peer] = True
+	def notify(self, message):
+		print message
+		self.public.send(self.db.resources[message.path].age)
 
 	def stop(self):
-		self.bus.stop()
-		self.public.stop()
 		self.private.stop()
+		self.public.stop()
+		self.bus.stop()
 
 if __name__=='__main__':
-	p = Peer()
+	p = Peer('/home/ryan/bin')
 	try:
 		p.start()
 		while True:

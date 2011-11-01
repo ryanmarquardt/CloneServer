@@ -1,5 +1,2 @@
 MANIFEST
-dist/*
-*.pyc
-*.so
-build/*
+sample

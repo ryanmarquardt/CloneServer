@@ -8,9 +8,9 @@ setup(name="CloneServer", version="0.1",
 	description="Local network resource sharing",
 	url="http://orbnauticus.github.org/cloneserver",
 	license="Simplified BSD License",
-	scripts=[''],
-	packages=['cloneserver'],
+	scripts=['bin/client', 'bin/server'],
+	packages=['cloneserver', 'hashsplit'],
 	ext_modules=[
-		Extension("cloneserver/_hashsplit", ["cloneserver/hashsplitmodule.c"])
+		Extension("hashsplit/_hashsplit", ["hashsplit/hashsplitmodule.c"])
 	],
 )

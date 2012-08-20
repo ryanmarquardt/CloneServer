@@ -1,0 +1,17 @@
+#!/usr/bin/env python
+
+import cloneserver
+import argparse
+
+parser = argparse.ArgumentParser(description='Sync a folder')
+args.set_defaults(
+	cipher=None,
+	key=None
+)
+args = parser.parse_args()
+
+me = cloneserver.Peer()
+me.add_share("Ryan's Videos", '~/Videos')
+me.add_share("Ryan's Music", '~/Music')
+me.add_share("Ryan's Documents", '~/Documents', cipher=args.cipher or cloneserver.Ciphers.preferred, key=args.key or None)
+me.listen()
